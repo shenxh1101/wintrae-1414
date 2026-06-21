@@ -44,6 +44,7 @@ export type {
   RubricCriterion,
   RubricScoreDetail,
   KnowledgePointOverview,
+  StudentOverview,
 } from './types';
 
 export { compare, computeSimilarity, matchSynonyms, matchKeywordWithSynonyms, normalize } from './engine/comparator';
@@ -55,4 +56,5 @@ export {
   generatePracticeSuggestions,
   generateCommentary,
   generateKnowledgePointOverviews,
+  generateStudentOverviews,
 } from './generator/commentary';

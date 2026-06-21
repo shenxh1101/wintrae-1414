@@ -99,24 +99,28 @@ export interface ChoiceAnswer {
   type: QuestionType.Choice;
   questionId: string;
   selectedLabels: string[];
+  studentId?: string;
 }
 
 export interface FillBlankAnswer {
   type: QuestionType.FillBlank;
   questionId: string;
   values: Record<number, string>;
+  studentId?: string;
 }
 
 export interface ShortAnswerAnswer {
   type: QuestionType.ShortAnswer;
   questionId: string;
   text: string;
+  studentId?: string;
 }
 
 export interface StepAnswer {
   type: QuestionType.StepByStep;
   questionId: string;
   steps: Record<number, string>;
+  studentId?: string;
 }
 
 export type StudentAnswer = ChoiceAnswer | FillBlankAnswer | ShortAnswerAnswer | StepAnswer;
@@ -169,6 +173,7 @@ export interface RubricItem {
   weight: number;
   maxScore: number;
   allowPartialCredit: boolean;
+  allOrNothing?: boolean;
   criteria: RubricCriterion[];
 }
 
@@ -185,6 +190,8 @@ export interface RubricScoreDetail {
   maxScore: number;
   earnedScore: number;
   allowPartialCredit: boolean;
+  allOrNothing: boolean;
+  passed: boolean;
   criteriaScores: { criterionId: string; earned: boolean; scoreAwarded: number }[];
   hitEvidences: HitEvidence[];
 }
@@ -228,7 +235,10 @@ export interface ClassOverviewItem {
   scoreDistribution: ScoreBand[];
   topErrors: ErrorCategoryItem[];
   commonMistakes: string[];
-  rubricBreakdown: { rubricItemId: string; rubricItemName: string; avgScore: number; avgRatio: number }[];
+  rubricBreakdown: { rubricItemId: string; rubricItemName: string; avgScore: number; avgRatio: number; passRate: number }[];
+  synonymStats: { canonical: string; synonym: string; hitCount: number }[];
+  disabledAnswerStats: { text: string; reason: string; hitCount: number }[];
+  studentCount: number;
 }
 
 export interface KnowledgePointOverview {
@@ -241,6 +251,11 @@ export interface KnowledgePointOverview {
   weakRubricItems: string[];
   practiceDirection: PracticeSuggestion;
   relatedQuestions: string[];
+  typicalWrongAnswers: { answer: string; frequency: number; errorType: ErrorCategory }[];
+  representativeEvidences: HitEvidence[];
+  practiceTypeMix: { questionType: QuestionType; proportion: number; reason: string }[];
+  synonymStats: { canonical: string; synonym: string; hitCount: number }[];
+  disabledAnswerStats: { text: string; reason: string; hitCount: number }[];
 }
 
 export interface ScoreBand {
@@ -264,10 +279,24 @@ export interface CommentaryResult {
 
 export interface CorrectionResult {
   questionId: string;
+  studentId?: string;
   comparison: ComparisonResult;
   score: ScoreResult;
   errorClassification: ErrorClassificationResult;
   commentary: StudentCommentary;
+}
+
+export interface StudentOverview {
+  studentId: string;
+  totalScore: number;
+  totalEarned: number;
+  avgScoreRatio: number;
+  questionScores: { questionId: string; earned: number; total: number; ratio: number }[];
+  weakKnowledgePoints: { knowledgePoint: string; avgRatio: number }[];
+  topErrors: ErrorCategoryItem[];
+  rubricBreakdown: { rubricItemName: string; avgRatio: number }[];
+  needsReview: boolean;
+  reviewReasons: string[];
 }
 
 export interface BatchCorrectionResult {
@@ -275,6 +304,7 @@ export interface BatchCorrectionResult {
   classOverview: ClassOverviewItem[];
   knowledgePointOverview: KnowledgePointOverview[];
   practiceSuggestions: PracticeSuggestion[];
+  studentOverview: StudentOverview[];
 }
 
 export interface SDKConfig {

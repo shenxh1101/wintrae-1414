@@ -133,13 +133,16 @@ function applyRubric(
     return { rubricScores, totalEarned, allEvidences };
   }
 
-  const totalRubricMax = rubricItems.reduce((s, r) => s + r.maxScore, 0) || 1;
+  const totalWeight = rubricItems.reduce((s, r) => s + (r.weight || 1), 0) || 1;
 
   for (const rubric of rubricItems) {
     const allowPartial = rubric.allowPartialCredit ?? defaultPartialCreditEnabled;
+    const allOrNothing = rubric.allOrNothing ?? false;
     const criterionScores: { criterionId: string; earned: boolean; scoreAwarded: number }[] = [];
     const rubricEvidences: HitEvidence[] = [];
     let rubricEarned = 0;
+
+    let allCriteriaFullHit = true;
 
     for (const criterion of rubric.criteria) {
       const kwResult = scoreKeywords(studentText, criterion.keywords, rubric.id);
@@ -155,6 +158,10 @@ function applyRubric(
       } else {
         awarded = allKeywordsHit ? criterion.score : 0;
         earned = allKeywordsHit;
+      }
+
+      if (!allKeywordsHit) {
+        allCriteriaFullHit = false;
       }
 
       criterionScores.push({ criterionId: criterion.id, earned, scoreAwarded: awarded });
@@ -178,24 +185,45 @@ function applyRubric(
       }
     }
 
-    rubricEarned = Math.min(rubricEarned, rubric.maxScore);
+    let finalEarned = Math.min(rubricEarned, rubric.maxScore);
+    let passed = false;
+
+    if (allOrNothing) {
+      finalEarned = allCriteriaFullHit ? rubric.maxScore : 0;
+      passed = allCriteriaFullHit;
+      if (!allCriteriaFullHit) {
+        rubricEvidences.push({
+          rule: 'rubric_all_or_nothing_miss',
+          matchedContent: `${rubric.name}：未满足全部标准，整项不得分`,
+          scoreAwarded: 0,
+          rubricItemId: rubric.id,
+        });
+      }
+    } else {
+      passed = finalEarned > 0 && finalEarned >= rubric.maxScore * 0.6;
+    }
+
+    const weightRatio = (rubric.weight || 1) / totalWeight;
+    const weightedScore = weightRatio * maxTotalScore * (finalEarned / rubric.maxScore);
 
     const detail: RubricScoreDetail = {
       rubricItemId: rubric.id,
       rubricItemName: rubric.name,
       maxScore: rubric.maxScore,
-      earnedScore: rubricEarned,
+      earnedScore: finalEarned,
       allowPartialCredit: allowPartial,
+      allOrNothing,
+      passed,
       criteriaScores: criterionScores,
       hitEvidences: rubricEvidences,
     };
     rubricScores.push(detail);
-    totalEarned += (rubricEarned / totalRubricMax) * maxTotalScore;
+    totalEarned += weightedScore;
   }
 
   return {
     rubricScores,
-    totalEarned: Math.round(totalEarned * 100) / 100,
+    totalEarned: Math.min(Math.round(totalEarned * 100) / 100, maxTotalScore),
     allEvidences,
   };
 }

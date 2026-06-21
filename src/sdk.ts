@@ -13,6 +13,7 @@ import {
   SDKConfig,
   DefaultScoringConfig,
   KnowledgePointOverview,
+  StudentOverview,
 } from './types';
 import { compare } from './engine/comparator';
 import { score } from './engine/scorer';
@@ -23,6 +24,7 @@ import {
   generatePracticeSuggestions,
   generateCommentary,
   generateKnowledgePointOverviews,
+  generateStudentOverviews,
 } from './generator/commentary';
 
 const DEFAULT_CONFIG: SDKConfig = {
@@ -105,6 +107,13 @@ export class CorrectionSDK {
     return generateKnowledgePointOverviews(questions, results);
   }
 
+  generateStudentOverviews(
+    questions: Question[],
+    results: CorrectionResult[],
+  ): StudentOverview[] {
+    return generateStudentOverviews(questions, results);
+  }
+
   correct(question: Question, answer: StudentAnswer): CorrectionResult {
     const comparison = compare(question, answer);
     const scoreResult = score(question, answer, comparison, this.config);
@@ -113,6 +122,7 @@ export class CorrectionSDK {
 
     return {
       questionId: question.id,
+      studentId: answer.studentId,
       comparison,
       score: scoreResult,
       errorClassification: errorClassResult,
@@ -147,12 +157,14 @@ export class CorrectionSDK {
     }
 
     const knowledgePointOverviews = generateKnowledgePointOverviews(questions, results);
+    const studentOverviews = generateStudentOverviews(questions, results);
 
     return {
       results,
       classOverview: classOverviews,
       knowledgePointOverview: knowledgePointOverviews,
       practiceSuggestions: allSuggestions,
+      studentOverview: studentOverviews,
     };
   }
 
