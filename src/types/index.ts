@@ -147,6 +147,11 @@ export interface HitEvidence {
   matchedViaSynonym?: { canonical: string; synonym: string };
   scoreAwarded: number;
   rubricItemId?: string;
+  criterionScore?: number;
+  criterionScoreRatio?: number;
+  rubricScore?: number;
+  rubricScoreRatio?: number;
+  weightedTotalContribution?: number;
 }
 
 export interface SuspiciousItem {
@@ -229,6 +234,56 @@ export interface StudentCommentary {
   rubricFeedback: { rubricItemName: string; feedback: string }[];
 }
 
+export type ReviewStatus = 'pending' | 'confirmed_valid' | 'confirmed_invalid';
+
+export interface ReviewItem {
+  id: string;
+  studentId: string;
+  questionId: string;
+  type: 'disabled_hit' | 'ambiguous_answer' | 'possible_guess' | 'contradiction';
+  status: ReviewStatus;
+  content: string;
+  reason: string;
+  severity: 'warning' | 'error';
+  createdAt: number;
+  originalAnswer: StudentAnswer;
+  earnedScore: number;
+  totalScore: number;
+}
+
+export interface ReviewWorkbench {
+  pending: ReviewItem[];
+  confirmedValid: ReviewItem[];
+  confirmedInvalid: ReviewItem[];
+  byStudent: Record<string, ReviewItem[]>;
+  byQuestion: Record<string, ReviewItem[]>;
+  summary: {
+    totalCount: number;
+    pendingCount: number;
+    confirmedValidCount: number;
+    confirmedInvalidCount: number;
+    byType: Record<string, number>;
+  };
+}
+
+export interface TypicalWrongAnswer {
+  answer: string;
+  frequency: number;
+  errorType: ErrorCategory;
+  studentIds: string[];
+  questionIds: string[];
+  knowledgePoints: string[];
+}
+
+export interface CrossQuestionStat {
+  expression: string;
+  type: 'synonym' | 'disabled';
+  totalHitCount: number;
+  byQuestion: { questionId: string; hitCount: number; knowledgePoints: string[] }[];
+  byKnowledgePoint: { knowledgePoint: string; hitCount: number; questionIds: string[] }[];
+  metadata?: { canonical?: string; reason?: string };
+}
+
 export interface ClassOverviewItem {
   questionId: string;
   avgScore: number;
@@ -239,6 +294,7 @@ export interface ClassOverviewItem {
   synonymStats: { canonical: string; synonym: string; hitCount: number }[];
   disabledAnswerStats: { text: string; reason: string; hitCount: number }[];
   studentCount: number;
+  typicalWrongAnswers: TypicalWrongAnswer[];
 }
 
 export interface KnowledgePointOverview {
@@ -251,7 +307,7 @@ export interface KnowledgePointOverview {
   weakRubricItems: string[];
   practiceDirection: PracticeSuggestion;
   relatedQuestions: string[];
-  typicalWrongAnswers: { answer: string; frequency: number; errorType: ErrorCategory }[];
+  typicalWrongAnswers: TypicalWrongAnswer[];
   representativeEvidences: HitEvidence[];
   practiceTypeMix: { questionType: QuestionType; proportion: number; reason: string }[];
   synonymStats: { canonical: string; synonym: string; hitCount: number }[];
@@ -284,6 +340,7 @@ export interface CorrectionResult {
   score: ScoreResult;
   errorClassification: ErrorClassificationResult;
   commentary: StudentCommentary;
+  originalAnswer: StudentAnswer;
 }
 
 export interface StudentOverview {
@@ -305,6 +362,11 @@ export interface BatchCorrectionResult {
   knowledgePointOverview: KnowledgePointOverview[];
   practiceSuggestions: PracticeSuggestion[];
   studentOverview: StudentOverview[];
+  reviewWorkbench: ReviewWorkbench;
+  crossQuestionStats: {
+    synonymStats: CrossQuestionStat[];
+    disabledAnswerStats: CrossQuestionStat[];
+  };
 }
 
 export interface SDKConfig {

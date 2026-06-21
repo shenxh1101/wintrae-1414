@@ -45,6 +45,11 @@ export type {
   RubricScoreDetail,
   KnowledgePointOverview,
   StudentOverview,
+  ReviewStatus,
+  ReviewItem,
+  ReviewWorkbench,
+  TypicalWrongAnswer,
+  CrossQuestionStat,
 } from './types';
 
 export { compare, computeSimilarity, matchSynonyms, matchKeywordWithSynonyms, normalize } from './engine/comparator';
@@ -57,4 +62,7 @@ export {
   generateCommentary,
   generateKnowledgePointOverviews,
   generateStudentOverviews,
+  buildTypicalWrongAnswers,
+  buildReviewWorkbench,
+  buildCrossQuestionStats,
 } from './generator/commentary';

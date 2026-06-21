@@ -15,6 +15,12 @@ import {
   StudentOverview,
   HitEvidence,
   ErrorCategoryItem,
+  TypicalWrongAnswer,
+  ReviewWorkbench,
+  ReviewItem,
+  ReviewStatus,
+  StudentAnswer,
+  CrossQuestionStat,
 } from '../types';
 
 function buildStudentSummary(
@@ -158,6 +164,325 @@ export function generateStudentCommentary(
   };
 }
 
+function extractAnswerText(result: CorrectionResult): string {
+  const ans = result.originalAnswer;
+  if (!ans) return result.commentary.summary;
+  if ('text' in ans && typeof ans.text === 'string') return ans.text;
+  if ('values' in ans && typeof ans.values === 'object') {
+    return Object.values(ans.values as Record<number, string>).join(' | ');
+  }
+  if ('selectedLabels' in ans && Array.isArray(ans.selectedLabels)) {
+    return ans.selectedLabels.join(',');
+  }
+  if ('steps' in ans && typeof ans.steps === 'object') {
+    return Object.values(ans.steps as Record<number, string>).join(' | ');
+  }
+  return result.commentary.summary;
+}
+
+export function buildTypicalWrongAnswers(
+  results: CorrectionResult[],
+  questions: Question[],
+  scopeKnowledgePoint?: string,
+): TypicalWrongAnswer[] {
+  const wrongMap = new Map<
+    string,
+    {
+      frequency: number;
+      errorType: ErrorCategory;
+      studentIds: Set<string>;
+      questionIds: Set<string>;
+      knowledgePoints: Set<string>;
+    }
+  >();
+
+  for (const r of results) {
+    const ratio = r.score.totalScore > 0 ? r.score.earnedScore / r.score.totalScore : 0;
+    if (ratio >= 0.6) continue;
+    const q = questions.find((qq) => qq.id === r.questionId);
+    if (!q) continue;
+    if (scopeKnowledgePoint && !q.knowledgePoints.includes(scopeKnowledgePoint)) continue;
+
+    const answerText = extractAnswerText(r) || r.questionId;
+    const key = answerText;
+    const existing = wrongMap.get(key);
+    if (existing) {
+      existing.frequency++;
+      if (r.studentId) existing.studentIds.add(r.studentId);
+      existing.questionIds.add(r.questionId);
+      for (const kp of q.knowledgePoints) existing.knowledgePoints.add(kp);
+    } else {
+      wrongMap.set(key, {
+        frequency: 1,
+        errorType: r.errorClassification.dominantCategory,
+        studentIds: new Set(r.studentId ? [r.studentId] : []),
+        questionIds: new Set([r.questionId]),
+        knowledgePoints: new Set(q.knowledgePoints),
+      });
+    }
+  }
+
+  return [...wrongMap.entries()]
+    .sort((a, b) => b[1].frequency - a[1].frequency)
+    .slice(0, 5)
+    .map(([answer, data]) => ({
+      answer,
+      frequency: data.frequency,
+      errorType: data.errorType,
+      studentIds: [...data.studentIds],
+      questionIds: [...data.questionIds],
+      knowledgePoints: [...data.knowledgePoints],
+    }));
+}
+
+export function buildReviewWorkbench(
+  results: CorrectionResult[],
+  initialStatuses?: Record<string, ReviewStatus>,
+): ReviewWorkbench {
+  const items: ReviewItem[] = [];
+  const seen = new Set<string>();
+  let itemSeq = 0;
+
+  const pushItem = (
+    studentId: string,
+    questionId: string,
+    type: ReviewItem['type'],
+    content: string,
+    reason: string,
+    severity: 'warning' | 'error',
+    originalAnswer: StudentAnswer,
+    earnedScore: number,
+    totalScore: number,
+  ) => {
+    const dedupKey = `${questionId}::${studentId}::${type}::${content}`;
+    if (seen.has(dedupKey)) return;
+    seen.add(dedupKey);
+    const id = `rv-${questionId}-${studentId}-${type}-${++itemSeq}`;
+    items.push({
+      id,
+      studentId,
+      questionId,
+      type,
+      status: initialStatuses?.[id] ?? 'pending',
+      content,
+      reason,
+      severity,
+      createdAt: Date.now(),
+      originalAnswer,
+      earnedScore,
+      totalScore,
+    });
+  };
+
+  for (const r of results) {
+    const studentId = r.studentId ?? 'unknown';
+    const totalScore = r.score.totalScore;
+    const earnedScore = r.score.earnedScore;
+
+    for (const si of r.score.suspiciousItems) {
+      const type = si.type as ReviewItem['type'];
+      pushItem(
+        studentId,
+        r.questionId,
+        type,
+        si.content,
+        si.description,
+        type === 'disabled_hit' || type === 'contradiction' ? 'error' : 'warning',
+        r.originalAnswer,
+        earnedScore,
+        totalScore,
+      );
+    }
+
+    for (const mr of r.score.manualReviewReasons) {
+      const type: ReviewItem['type'] =
+        mr.code === 'DISABLED_ANSWER_HIT'
+          ? 'disabled_hit'
+          : mr.code?.includes('SIMILARITY') || mr.message.includes('相似')
+            ? 'ambiguous_answer'
+            : 'possible_guess';
+      if (type === 'disabled_hit') continue;
+      const content = mr.message.slice(0, 60);
+      pushItem(
+        studentId,
+        r.questionId,
+        type,
+        content,
+        mr.message,
+        mr.severity,
+        r.originalAnswer,
+        earnedScore,
+        totalScore,
+      );
+    }
+  }
+
+  const pending: ReviewItem[] = [];
+  const confirmedValid: ReviewItem[] = [];
+  const confirmedInvalid: ReviewItem[] = [];
+  const byStudent: Record<string, ReviewItem[]> = {};
+  const byQuestion: Record<string, ReviewItem[]> = {};
+  const byType: Record<string, number> = {};
+
+  for (const item of items) {
+    if (item.status === 'pending') pending.push(item);
+    else if (item.status === 'confirmed_valid') confirmedValid.push(item);
+    else confirmedInvalid.push(item);
+
+    if (!byStudent[item.studentId]) byStudent[item.studentId] = [];
+    byStudent[item.studentId].push(item);
+
+    if (!byQuestion[item.questionId]) byQuestion[item.questionId] = [];
+    byQuestion[item.questionId].push(item);
+
+    byType[item.type] = (byType[item.type] ?? 0) + 1;
+  }
+
+  return {
+    pending,
+    confirmedValid,
+    confirmedInvalid,
+    byStudent,
+    byQuestion,
+    summary: {
+      totalCount: items.length,
+      pendingCount: pending.length,
+      confirmedValidCount: confirmedValid.length,
+      confirmedInvalidCount: confirmedInvalid.length,
+      byType,
+    },
+  };
+}
+
+export function buildCrossQuestionStats(
+  questions: Question[],
+  results: CorrectionResult[],
+): { synonymStats: CrossQuestionStat[]; disabledAnswerStats: CrossQuestionStat[] } {
+  const synonymMap = new Map<
+    string,
+    {
+      expression: string;
+      canonical: string;
+      byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string> }>;
+    }
+  >();
+  const disabledMap = new Map<
+    string,
+    {
+      expression: string;
+      reason: string;
+      byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string> }>;
+    }
+  >();
+
+  for (const r of results) {
+    const q = questions.find((qq) => qq.id === r.questionId);
+    if (!q) continue;
+    const kps = q.knowledgePoints;
+
+    for (const syn of r.comparison.matchedSynonyms ?? []) {
+      const key = syn.synonym;
+      const existing = synonymMap.get(key);
+      if (existing) {
+        existing.canonical = existing.canonical || syn.canonical;
+        const qEntry = existing.byQuestion.get(r.questionId);
+        if (qEntry) {
+          qEntry.hitCount++;
+          for (const kp of kps) qEntry.knowledgePoints.add(kp);
+        } else {
+          existing.byQuestion.set(r.questionId, {
+            hitCount: 1,
+            knowledgePoints: new Set(kps),
+          });
+        }
+      } else {
+        synonymMap.set(key, {
+          expression: key,
+          canonical: syn.canonical,
+          byQuestion: new Map([
+            [r.questionId, { hitCount: 1, knowledgePoints: new Set(kps) }],
+          ]),
+        });
+      }
+    }
+
+    for (const si of r.score.suspiciousItems ?? []) {
+      if (si.type !== 'disabled_hit') continue;
+      const key = si.content;
+      const existing = disabledMap.get(key);
+      if (existing) {
+        const qEntry = existing.byQuestion.get(r.questionId);
+        if (qEntry) {
+          qEntry.hitCount++;
+          for (const kp of kps) qEntry.knowledgePoints.add(kp);
+        } else {
+          existing.byQuestion.set(r.questionId, {
+            hitCount: 1,
+            knowledgePoints: new Set(kps),
+          });
+        }
+      } else {
+        disabledMap.set(key, {
+          expression: key,
+          reason: si.description,
+          byQuestion: new Map([
+            [r.questionId, { hitCount: 1, knowledgePoints: new Set(kps) }],
+          ]),
+        });
+      }
+    }
+  }
+
+  const toStat = (
+    type: 'synonym' | 'disabled',
+    entry: { expression: string; byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string> }>; canonical?: string; reason?: string },
+  ): CrossQuestionStat => {
+    const byQuestion = [...entry.byQuestion.entries()].map(([qid, data]) => ({
+      questionId: qid,
+      hitCount: data.hitCount,
+      knowledgePoints: [...data.knowledgePoints],
+    }));
+    const kpMap = new Map<string, { hitCount: number; questionIds: Set<string> }>();
+    for (const [qid, data] of entry.byQuestion.entries()) {
+      for (const kp of data.knowledgePoints) {
+        const existing = kpMap.get(kp);
+        if (existing) {
+          existing.hitCount += data.hitCount;
+          existing.questionIds.add(qid);
+        } else {
+          kpMap.set(kp, { hitCount: data.hitCount, questionIds: new Set([qid]) });
+        }
+      }
+    }
+    const byKnowledgePoint = [...kpMap.entries()].map(([kp, data]) => ({
+      knowledgePoint: kp,
+      hitCount: data.hitCount,
+      questionIds: [...data.questionIds],
+    }));
+    const totalHitCount = byQuestion.reduce((s, q) => s + q.hitCount, 0);
+    return {
+      expression: entry.expression,
+      type,
+      totalHitCount,
+      byQuestion,
+      byKnowledgePoint,
+      metadata:
+        type === 'synonym'
+          ? { canonical: (entry as any).canonical }
+          : { reason: (entry as any).reason },
+    };
+  };
+
+  return {
+    synonymStats: [...synonymMap.values()]
+      .map((e) => toStat('synonym', e))
+      .sort((a, b) => b.totalHitCount - a.totalHitCount),
+    disabledAnswerStats: [...disabledMap.values()]
+      .map((e) => toStat('disabled', e))
+      .sort((a, b) => b.totalHitCount - a.totalHitCount),
+  };
+}
+
 export function generateClassOverview(
   question: Question,
   results: CorrectionResult[],
@@ -297,6 +622,8 @@ export function generateClassOverview(
   }
   const studentCount = studentIds.size > 0 ? studentIds.size : results.length;
 
+  const typicalWrongAnswers = buildTypicalWrongAnswers(results, [question]);
+
   return {
     questionId: question.id,
     avgScore,
@@ -307,6 +634,7 @@ export function generateClassOverview(
     synonymStats,
     disabledAnswerStats,
     studentCount,
+    typicalWrongAnswers,
   };
 }
 
@@ -421,29 +749,7 @@ export function generateKnowledgePointOverviews(
     weakRubricItems.sort((a, b) => a.avgRatio - b.avgRatio);
     const weakRubricNames = weakRubricItems.map((w) => w.name);
 
-    const wrongAnswerMap = new Map<string, { frequency: number; errorType: ErrorCategory }>();
-    for (const r of kpResults) {
-      const ratio = r.score.totalScore > 0 ? r.score.earnedScore / r.score.totalScore : 0;
-      if (ratio < 0.6) {
-        let answerText = '';
-        if (r.comparison.questionType === QuestionType.ShortAnswer) {
-          answerText = (allResults.find((x) => x.questionId === r.questionId && x.studentId === r.studentId) as any)
-            ?.answer?.text ?? r.commentary.summary;
-        }
-        const key = answerText || r.questionId;
-        const existing = wrongAnswerMap.get(key);
-        const domCat = r.errorClassification.dominantCategory;
-        if (existing) {
-          existing.frequency++;
-        } else {
-          wrongAnswerMap.set(key, { frequency: 1, errorType: domCat });
-        }
-      }
-    }
-    const typicalWrongAnswers = [...wrongAnswerMap.entries()]
-      .sort((a, b) => b[1].frequency - a[1].frequency)
-      .slice(0, 5)
-      .map(([answer, data]) => ({ answer, ...data }));
+    const typicalWrongAnswers = buildTypicalWrongAnswers(kpResults, questions, kp);
 
     const representativeEvidences: HitEvidence[] = [];
     const evKeyMap = new Map<string, number>();

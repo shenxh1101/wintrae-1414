@@ -14,6 +14,9 @@ import {
   DefaultScoringConfig,
   KnowledgePointOverview,
   StudentOverview,
+  ReviewWorkbench,
+  ReviewStatus,
+  CrossQuestionStat,
 } from './types';
 import { compare } from './engine/comparator';
 import { score } from './engine/scorer';
@@ -25,6 +28,9 @@ import {
   generateCommentary,
   generateKnowledgePointOverviews,
   generateStudentOverviews,
+  buildReviewWorkbench,
+  buildCrossQuestionStats,
+  buildTypicalWrongAnswers,
 } from './generator/commentary';
 
 const DEFAULT_CONFIG: SDKConfig = {
@@ -127,6 +133,7 @@ export class CorrectionSDK {
       score: scoreResult,
       errorClassification: errorClassResult,
       commentary,
+      originalAnswer: answer,
     };
   }
 
@@ -158,6 +165,8 @@ export class CorrectionSDK {
 
     const knowledgePointOverviews = generateKnowledgePointOverviews(questions, results);
     const studentOverviews = generateStudentOverviews(questions, results);
+    const reviewWorkbench = buildReviewWorkbench(results);
+    const crossQuestionStats = buildCrossQuestionStats(questions, results);
 
     return {
       results,
@@ -165,7 +174,31 @@ export class CorrectionSDK {
       knowledgePointOverview: knowledgePointOverviews,
       practiceSuggestions: allSuggestions,
       studentOverview: studentOverviews,
+      reviewWorkbench,
+      crossQuestionStats,
     };
+  }
+
+  buildReviewWorkbench(
+    results: CorrectionResult[],
+    initialStatuses?: Record<string, ReviewStatus>,
+  ): ReviewWorkbench {
+    return buildReviewWorkbench(results, initialStatuses);
+  }
+
+  buildCrossQuestionStats(
+    questions: Question[],
+    results: CorrectionResult[],
+  ): { synonymStats: CrossQuestionStat[]; disabledAnswerStats: CrossQuestionStat[] } {
+    return buildCrossQuestionStats(questions, results);
+  }
+
+  buildTypicalWrongAnswers(
+    results: CorrectionResult[],
+    questions: Question[],
+    scopeKnowledgePoint?: string,
+  ) {
+    return buildTypicalWrongAnswers(results, questions, scopeKnowledgePoint);
   }
 
   getConfig(): SDKConfig {
