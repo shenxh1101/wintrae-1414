@@ -21,6 +21,11 @@ import {
   ReviewStatus,
   StudentAnswer,
   CrossQuestionStat,
+  ReviewAdjustment,
+  LectureExport,
+  LectureExportKnowledgePoint,
+  LectureExportQuestion,
+  BatchDiagnosis,
 } from '../types';
 
 function buildStudentSummary(
@@ -354,6 +359,92 @@ export function buildReviewWorkbench(
   };
 }
 
+export function applyReviewDecisions(
+  results: CorrectionResult[],
+  reviewStatuses: Record<string, ReviewStatus>,
+): CorrectionResult[] {
+  const wb = buildReviewWorkbench(results, reviewStatuses);
+  const idToItem = new Map<string, ReviewItem>();
+  for (const it of [...wb.pending, ...wb.confirmedValid, ...wb.confirmedInvalid]) {
+    idToItem.set(it.id, it);
+  }
+
+  const invalidatedKeys = new Set<string>();
+  const validatedKeys = new Set<string>();
+  for (const [rid, status] of Object.entries(reviewStatuses)) {
+    const it = idToItem.get(rid);
+    if (!it) continue;
+    const key = `${it.studentId}|${it.questionId}|${it.type}|${it.content}`;
+    if (status === 'confirmed_invalid') invalidatedKeys.add(key);
+    else if (status === 'confirmed_valid') validatedKeys.add(key);
+  }
+
+  return results.map((r) => {
+    const studentId = r.studentId ?? 'unknown';
+    const originalEarned = r.score.earnedScore;
+    let delta = 0;
+    const adjustments: ReviewAdjustment[] = [];
+
+    const relevantInvalid = r.score.suspiciousItems.filter((si) => {
+      const key = `${studentId}|${r.questionId}|${si.type}|${si.content}`;
+      return invalidatedKeys.has(key);
+    });
+
+    const relevantValid = r.score.suspiciousItems.filter((si) => {
+      const key = `${studentId}|${r.questionId}|${si.type}|${si.content}`;
+      return validatedKeys.has(key);
+    });
+
+    if (relevantInvalid.length > 0) {
+      delta = -originalEarned;
+      for (let i = 0; i < relevantInvalid.length; i++) {
+        const si = relevantInvalid[i];
+        const id = [...idToItem.values()].find(
+          (it) => it.studentId === studentId && it.questionId === r.questionId && it.type === si.type && it.content === si.content,
+        )?.id;
+        const share = i === relevantInvalid.length - 1
+          ? -originalEarned - adjustments.reduce((s, a) => s + a.deltaScore, 0)
+          : Math.round((-originalEarned / relevantInvalid.length) * 100) / 100;
+        adjustments.push({
+          reviewItemId: id ?? `rv-${studentId}-${r.questionId}-${si.type}-${si.content}`,
+          deltaScore: share,
+          newEarnedScore: 0,
+          note: `复核确认为无效，${si.type}：${si.content}`,
+        });
+      }
+    } else if (relevantValid.length > 0) {
+      for (const si of relevantValid) {
+        const id = [...idToItem.values()].find(
+          (it) => it.studentId === studentId && it.questionId === r.questionId && it.type === si.type && it.content === si.content,
+        )?.id;
+        adjustments.push({
+          reviewItemId: id ?? `rv-${studentId}-${r.questionId}-${si.type}-${si.content}`,
+          deltaScore: 0,
+          newEarnedScore: originalEarned,
+          note: `复核确认为有效，${si.type}：${si.content}`,
+        });
+      }
+    }
+
+    const newScore = Math.max(0, Math.round((originalEarned + delta) * 100) / 100);
+    const extraNotes = adjustments.filter((a) => a.note).map((a) => a.note!);
+
+    return {
+      ...r,
+      score: {
+        ...r.score,
+        earnedScore: newScore,
+        reviewAdjustedScore: newScore,
+        reviewAdjustments: adjustments,
+      },
+      commentary: {
+        ...r.commentary,
+        improvements: [...r.commentary.improvements, ...extraNotes],
+      },
+    };
+  });
+}
+
 export function buildCrossQuestionStats(
   questions: Question[],
   results: CorrectionResult[],
@@ -363,7 +454,7 @@ export function buildCrossQuestionStats(
     {
       expression: string;
       canonical: string;
-      byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string> }>;
+      byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string>; studentIds: Set<string> }>;
     }
   >();
   const disabledMap = new Map<
@@ -371,62 +462,89 @@ export function buildCrossQuestionStats(
     {
       expression: string;
       reason: string;
-      byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string> }>;
+      byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string>; studentIds: Set<string> }>;
     }
   >();
+
+  const pushSynonym = (canonical: string, synonymText: string, r: CorrectionResult, kps: string[]) => {
+    const key = synonymText || canonical;
+    const existing = synonymMap.get(key);
+    const sid = r.studentId || '__anon__';
+    if (existing) {
+      existing.canonical = existing.canonical || canonical;
+      const qEntry = existing.byQuestion.get(r.questionId);
+      if (qEntry) {
+        qEntry.hitCount++;
+        for (const kp of kps) qEntry.knowledgePoints.add(kp);
+        qEntry.studentIds.add(sid);
+      } else {
+        existing.byQuestion.set(r.questionId, {
+          hitCount: 1,
+          knowledgePoints: new Set(kps),
+          studentIds: new Set([sid]),
+        });
+      }
+    } else {
+      synonymMap.set(key, {
+        expression: key,
+        canonical: canonical || synonymText,
+        byQuestion: new Map([
+          [r.questionId, { hitCount: 1, knowledgePoints: new Set(kps), studentIds: new Set([sid]) }],
+        ]),
+      });
+    }
+  };
 
   for (const r of results) {
     const q = questions.find((qq) => qq.id === r.questionId);
     if (!q) continue;
     const kps = q.knowledgePoints;
 
+    const seenSynonyms = new Set<string>();
+    const pushDedup = (canonical: string, synonymText: string) => {
+      const dk = `${canonical}|${synonymText}`;
+      if (seenSynonyms.has(dk)) return;
+      seenSynonyms.add(dk);
+      pushSynonym(canonical, synonymText, r, kps);
+    };
+
     for (const syn of r.comparison.matchedSynonyms ?? []) {
-      const key = syn.synonym;
-      const existing = synonymMap.get(key);
-      if (existing) {
-        existing.canonical = existing.canonical || syn.canonical;
-        const qEntry = existing.byQuestion.get(r.questionId);
-        if (qEntry) {
-          qEntry.hitCount++;
-          for (const kp of kps) qEntry.knowledgePoints.add(kp);
-        } else {
-          existing.byQuestion.set(r.questionId, {
-            hitCount: 1,
-            knowledgePoints: new Set(kps),
-          });
-        }
-      } else {
-        synonymMap.set(key, {
-          expression: key,
-          canonical: syn.canonical,
-          byQuestion: new Map([
-            [r.questionId, { hitCount: 1, knowledgePoints: new Set(kps) }],
-          ]),
-        });
+      pushDedup(syn.canonical, syn.synonym);
+    }
+
+    for (const ev of r.score.hitEvidences ?? []) {
+      if (ev.matchedViaSynonym) {
+        pushDedup(ev.matchedViaSynonym.canonical, ev.matchedViaSynonym.synonym);
       }
     }
 
+    const disabledKey = new Set<string>();
     for (const si of r.score.suspiciousItems ?? []) {
       if (si.type !== 'disabled_hit') continue;
-      const key = si.content;
-      const existing = disabledMap.get(key);
+      const sid = r.studentId || '__anon__';
+      const dk = `${r.questionId}|${sid}|${si.content}`;
+      if (disabledKey.has(dk)) continue;
+      disabledKey.add(dk);
+      const existing = disabledMap.get(si.content);
       if (existing) {
         const qEntry = existing.byQuestion.get(r.questionId);
         if (qEntry) {
           qEntry.hitCount++;
           for (const kp of kps) qEntry.knowledgePoints.add(kp);
+          qEntry.studentIds.add(sid);
         } else {
           existing.byQuestion.set(r.questionId, {
             hitCount: 1,
             knowledgePoints: new Set(kps),
+            studentIds: new Set([sid]),
           });
         }
       } else {
-        disabledMap.set(key, {
-          expression: key,
+        disabledMap.set(si.content, {
+          expression: si.content,
           reason: si.description,
           byQuestion: new Map([
-            [r.questionId, { hitCount: 1, knowledgePoints: new Set(kps) }],
+            [r.questionId, { hitCount: 1, knowledgePoints: new Set(kps), studentIds: new Set([sid]) }],
           ]),
         });
       }
@@ -435,35 +553,43 @@ export function buildCrossQuestionStats(
 
   const toStat = (
     type: 'synonym' | 'disabled',
-    entry: { expression: string; byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string> }>; canonical?: string; reason?: string },
+    entry: { expression: string; byQuestion: Map<string, { hitCount: number; knowledgePoints: Set<string>; studentIds: Set<string> }>; canonical?: string; reason?: string },
   ): CrossQuestionStat => {
     const byQuestion = [...entry.byQuestion.entries()].map(([qid, data]) => ({
       questionId: qid,
       hitCount: data.hitCount,
+      uniqueStudentCount: data.studentIds.size,
       knowledgePoints: [...data.knowledgePoints],
     }));
-    const kpMap = new Map<string, { hitCount: number; questionIds: Set<string> }>();
+    const kpMap = new Map<string, { hitCount: number; questionIds: Set<string>; studentIds: Set<string> }>();
     for (const [qid, data] of entry.byQuestion.entries()) {
       for (const kp of data.knowledgePoints) {
         const existing = kpMap.get(kp);
         if (existing) {
           existing.hitCount += data.hitCount;
           existing.questionIds.add(qid);
+          for (const sid of data.studentIds) existing.studentIds.add(sid);
         } else {
-          kpMap.set(kp, { hitCount: data.hitCount, questionIds: new Set([qid]) });
+          kpMap.set(kp, { hitCount: data.hitCount, questionIds: new Set([qid]), studentIds: new Set(data.studentIds) });
         }
       }
     }
     const byKnowledgePoint = [...kpMap.entries()].map(([kp, data]) => ({
       knowledgePoint: kp,
       hitCount: data.hitCount,
+      uniqueStudentCount: data.studentIds.size,
       questionIds: [...data.questionIds],
     }));
     const totalHitCount = byQuestion.reduce((s, q) => s + q.hitCount, 0);
+    const studentUnion = new Set<string>();
+    for (const [, data] of entry.byQuestion.entries()) {
+      for (const sid of data.studentIds) studentUnion.add(sid);
+    }
     return {
       expression: entry.expression,
       type,
       totalHitCount,
+      uniqueStudentCount: studentUnion.size,
       byQuestion,
       byKnowledgePoint,
       metadata:
@@ -476,10 +602,10 @@ export function buildCrossQuestionStats(
   return {
     synonymStats: [...synonymMap.values()]
       .map((e) => toStat('synonym', e))
-      .sort((a, b) => b.totalHitCount - a.totalHitCount),
+      .sort((a, b) => b.uniqueStudentCount - a.uniqueStudentCount || b.totalHitCount - a.totalHitCount),
     disabledAnswerStats: [...disabledMap.values()]
       .map((e) => toStat('disabled', e))
-      .sort((a, b) => b.totalHitCount - a.totalHitCount),
+      .sort((a, b) => b.uniqueStudentCount - a.uniqueStudentCount || b.totalHitCount - a.totalHitCount),
   };
 }
 
@@ -1065,5 +1191,249 @@ export function generateCommentary(
     studentCommentary: generateStudentCommentary(question, scoreResult, errorClassification),
     classOverview: generateClassOverview(question, allResults),
     practiceSuggestions: generatePracticeSuggestions(question, allResults),
+  };
+}
+
+export function buildLectureExport(
+  questions: Question[],
+  results: CorrectionResult[],
+  reviewStatuses?: Record<string, ReviewStatus>,
+): LectureExport {
+  const adjustedResults = reviewStatuses
+    ? applyReviewDecisions(results, reviewStatuses)
+    : results;
+
+  const totalStudents = new Set(adjustedResults.map((r) => r.studentId).filter(Boolean) as string[]).size;
+  const totalScore = questions.reduce((s, q) => s + q.score, 0);
+  const avgRatioSum = adjustedResults.reduce((s, r) => s + (r.score.totalScore > 0 ? r.score.earnedScore / r.score.totalScore : 0), 0);
+  const avgScoreRatio = adjustedResults.length > 0 ? avgRatioSum / adjustedResults.length : 0;
+  const wb = buildReviewWorkbench(adjustedResults, reviewStatuses);
+  const reviewedRatio = wb.summary.totalCount > 0
+    ? (wb.summary.confirmedValidCount + wb.summary.confirmedInvalidCount) / wb.summary.totalCount
+    : 0;
+
+  const kpMap = new Map<string, LectureExportKnowledgePoint>();
+  for (const q of questions) {
+    for (const kp of q.knowledgePoints) {
+      if (!kpMap.has(kp)) {
+        kpMap.set(kp, {
+          knowledgePoint: kp,
+          avgScoreRatio: 0,
+          questionCount: 0,
+          studentCount: 0,
+          questions: [],
+          topErrors: [],
+          typicalWrongAnswers: [],
+          suggestedPriority: 0,
+        });
+      }
+    }
+  }
+
+  for (const [kp, kpData] of kpMap.entries()) {
+    const kpQuestions = questions.filter((q) => q.knowledgePoints.includes(kp));
+    const kpResults = adjustedResults.filter((r) =>
+      kpQuestions.some((q) => q.id === r.questionId),
+    );
+    const ratioSum = kpResults.reduce((s, r) => s + (r.score.totalScore > 0 ? r.score.earnedScore / r.score.totalScore : 0), 0);
+    kpData.avgScoreRatio = kpResults.length > 0 ? ratioSum / kpResults.length : 0;
+    kpData.questionCount = kpQuestions.length;
+    kpData.studentCount = new Set(kpResults.map((r) => r.studentId).filter(Boolean) as string[]).size;
+    kpData.typicalWrongAnswers = buildTypicalWrongAnswers(kpResults, kpQuestions, kp);
+
+    const errorCounts = new Map<string, number>();
+    for (const r of kpResults) {
+      for (const cat of r.errorClassification.categories) {
+        if (cat.confidence >= 0.3) {
+          errorCounts.set(cat.category, (errorCounts.get(cat.category) ?? 0) + 1);
+        }
+      }
+    }
+    kpData.topErrors = [...errorCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([category, count]) => ({
+        category: category as ErrorCategory,
+        count,
+        confidence: count / Math.max(1, kpResults.length),
+        evidence: `${category as string} 相关错误共 ${count} 次`,
+      }));
+
+    kpData.questions = kpQuestions.map((q) => {
+      const qResults = kpResults.filter((r) => r.questionId === q.id);
+      const qRatioSum = qResults.reduce((s, r) => s + (r.score.totalScore > 0 ? r.score.earnedScore / r.score.totalScore : 0), 0);
+      const qAvgRatio = qResults.length > 0 ? qRatioSum / qResults.length : 0;
+      const rubricScoresByItem = new Map<string, { totalRatio: number; count: number }>();
+      for (const r of qResults) {
+        for (const rd of r.score.rubricScores) {
+          const existing = rubricScoresByItem.get(rd.rubricItemId) ?? { totalRatio: 0, count: 0 };
+          existing.totalRatio += rd.maxScore > 0 ? rd.earnedScore / rd.maxScore : 0;
+          existing.count++;
+          rubricScoresByItem.set(rd.rubricItemId, existing);
+        }
+      }
+      const weakRubricItems = [...rubricScoresByItem.entries()]
+        .map(([id, data]) => {
+          const rd = qResults[0]?.score.rubricScores.find((r) => r.rubricItemId === id);
+          return {
+            rubricItemName: rd?.rubricItemName ?? id,
+            avgRatio: data.count > 0 ? data.totalRatio / data.count : 0,
+          };
+        })
+        .sort((a, b) => a.avgRatio - b.avgRatio)
+        .slice(0, 3);
+      return {
+        questionId: q.id,
+        stem: q.stem,
+        questionType: q.type,
+        referenceAnswer: 'referenceAnswer' in q ? (q as any).referenceAnswer : undefined,
+        score: q.score,
+        avgScoreRatio: qAvgRatio,
+        typicalWrongAnswers: buildTypicalWrongAnswers(qResults, [q]),
+        weakRubricItems,
+        studentIds: qResults.map((r) => r.studentId).filter(Boolean) as string[],
+      };
+    });
+
+    kpData.suggestedPriority = Math.round(((1 - kpData.avgScoreRatio) * 0.6 + kpData.studentCount / Math.max(1, totalStudents) * 0.4) * 100);
+  }
+
+  const knowledgePoints = [...kpMap.values()].sort((a, b) => b.suggestedPriority - a.suggestedPriority);
+
+  const crossStats = buildCrossQuestionStats(questions, adjustedResults);
+  const priorityKnowledgePoints = knowledgePoints
+    .map((k) => ({
+      knowledgePoint: k.knowledgePoint,
+      priority: k.suggestedPriority,
+      reason: `平均得分率${(k.avgScoreRatio * 100).toFixed(0)}%，${k.studentCount}名学生涉及`,
+    }));
+
+  const errorComboMap = new Map<string, { categories: ErrorCategory[]; count: number; studentIds: Set<string>; questionIds: Set<string> }>();
+  for (const r of adjustedResults) {
+    const cats = r.errorClassification.categories
+      .filter((c) => c.confidence >= 0.5)
+      .map((c) => c.category)
+      .sort();
+    if (cats.length >= 1) {
+      const key = cats.join('|');
+      const existing = errorComboMap.get(key);
+      if (existing) {
+        existing.count++;
+        if (r.studentId) existing.studentIds.add(r.studentId);
+        existing.questionIds.add(r.questionId);
+      } else {
+        errorComboMap.set(key, {
+          categories: cats,
+          count: 1,
+          studentIds: new Set(r.studentId ? [r.studentId] : []),
+          questionIds: new Set([r.questionId]),
+        });
+      }
+    }
+  }
+  const highFreqErrorCombos = [...errorComboMap.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5)
+    .map((c) => ({ categories: c.categories, count: c.count, frequency: c.count / Math.max(1, adjustedResults.length) }));
+
+  return {
+    generatedAt: Date.now(),
+    classSummary: {
+      totalStudents,
+      totalQuestions: questions.length,
+      totalScore,
+      avgScoreRatio: Math.round(avgScoreRatio * 10000) / 100,
+      reviewedRatio: Math.round(reviewedRatio * 10000) / 100,
+    },
+    knowledgePoints,
+    priorityList: {
+      knowledgePoints: priorityKnowledgePoints,
+      highFreqExpressions: [...crossStats.synonymStats.slice(0, 5), ...crossStats.disabledAnswerStats.slice(0, 5)],
+      highFreqErrorCombos,
+    },
+    reviewWorkbench: wb,
+  };
+}
+
+export function buildBatchDiagnosis(
+  questions: Question[],
+  results: CorrectionResult[],
+): BatchDiagnosis {
+  const crossStats = buildCrossQuestionStats(questions, results);
+  const totalStudents = new Set(results.map((r) => r.studentId).filter(Boolean) as string[]).size;
+
+  const kpMap = new Map<string, { avgRatio: number; studentCount: number; count: number }>();
+  for (const q of questions) {
+    for (const kp of q.knowledgePoints) {
+      if (!kpMap.has(kp)) kpMap.set(kp, { avgRatio: 0, studentCount: 0, count: 0 });
+    }
+  }
+
+  for (const [kp] of kpMap.entries()) {
+    const kpQuestions = questions.filter((q) => q.knowledgePoints.includes(kp));
+    const kpResults = results.filter((r) => kpQuestions.some((q) => q.id === r.questionId));
+    const ratioSum = kpResults.reduce((s, r) => s + (r.score.totalScore > 0 ? r.score.earnedScore / r.score.totalScore : 0), 0);
+    const studentCount = new Set(kpResults.map((r) => r.studentId).filter(Boolean) as string[]).size;
+    kpMap.set(kp, {
+      avgRatio: kpResults.length > 0 ? ratioSum / kpResults.length : 0,
+      studentCount,
+      count: kpResults.length,
+    });
+  }
+
+  const priorityKnowledgePoints = [...kpMap.entries()]
+    .map(([kp, data]) => {
+      const priorityScore = Math.round(((1 - data.avgRatio) * 0.6 + data.studentCount / Math.max(1, totalStudents) * 0.4) * 100);
+      return {
+        knowledgePoint: kp,
+        avgScoreRatio: Math.round(data.avgRatio * 10000) / 100,
+        studentCount: data.studentCount,
+        priorityScore,
+        reason: `平均得分率${(data.avgRatio * 100).toFixed(0)}%，涉及${data.studentCount}名学生`,
+      };
+    })
+    .sort((a, b) => b.priorityScore - a.priorityScore);
+
+  const errorComboMap = new Map<string, { categories: ErrorCategory[]; count: number; studentIds: Set<string>; questionIds: Set<string> }>();
+  for (const r of results) {
+    const cats = r.errorClassification.categories
+      .filter((c) => c.confidence >= 0.5)
+      .map((c) => c.category)
+      .sort();
+    if (cats.length >= 1) {
+      const key = cats.join('|');
+      const existing = errorComboMap.get(key);
+      if (existing) {
+        existing.count++;
+        if (r.studentId) existing.studentIds.add(r.studentId);
+        existing.questionIds.add(r.questionId);
+      } else {
+        errorComboMap.set(key, {
+          categories: cats,
+          count: 1,
+          studentIds: new Set(r.studentId ? [r.studentId] : []),
+          questionIds: new Set([r.questionId]),
+        });
+      }
+    }
+  }
+  const highFreqErrorCombinations = [...errorComboMap.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10)
+    .map((c) => ({
+      categories: c.categories,
+      studentIds: [...c.studentIds],
+      questionIds: [...c.questionIds],
+      count: c.count,
+      frequency: c.count / Math.max(1, results.length),
+    }));
+
+  return {
+    priorityKnowledgePoints,
+    highFreqReviewExpressions: crossStats.disabledAnswerStats.concat(
+      crossStats.synonymStats.filter((s) => s.type === 'synonym'),
+    ).sort((a, b) => b.uniqueStudentCount - a.uniqueStudentCount).slice(0, 10),
+    highFreqErrorCombinations,
+    suggestedLectureOrder: priorityKnowledgePoints.map((k) => k.knowledgePoint),
   };
 }

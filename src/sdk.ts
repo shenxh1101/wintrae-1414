@@ -17,6 +17,8 @@ import {
   ReviewWorkbench,
   ReviewStatus,
   CrossQuestionStat,
+  LectureExport,
+  BatchDiagnosis,
 } from './types';
 import { compare } from './engine/comparator';
 import { score } from './engine/scorer';
@@ -31,6 +33,9 @@ import {
   buildReviewWorkbench,
   buildCrossQuestionStats,
   buildTypicalWrongAnswers,
+  applyReviewDecisions,
+  buildLectureExport,
+  buildBatchDiagnosis,
 } from './generator/commentary';
 
 const DEFAULT_CONFIG: SDKConfig = {
@@ -199,6 +204,64 @@ export class CorrectionSDK {
     scopeKnowledgePoint?: string,
   ) {
     return buildTypicalWrongAnswers(results, questions, scopeKnowledgePoint);
+  }
+
+  applyReviewDecisions(
+    results: CorrectionResult[],
+    reviewStatuses: Record<string, ReviewStatus>,
+  ): CorrectionResult[] {
+    return applyReviewDecisions(results, reviewStatuses);
+  }
+
+  regenerateBatchStats(
+    questions: Question[],
+    results: CorrectionResult[],
+    reviewStatuses?: Record<string, ReviewStatus>,
+  ): BatchCorrectionResult {
+    const adjustedResults = reviewStatuses
+      ? applyReviewDecisions(results, reviewStatuses)
+      : results;
+
+    const classOverviews: ClassOverviewItem[] = [];
+    const allSuggestions: PracticeSuggestion[] = [];
+
+    for (const question of questions) {
+      const questionResults = adjustedResults.filter((r) => r.questionId === question.id);
+      if (questionResults.length > 0) {
+        classOverviews.push(generateClassOverview(question, questionResults));
+        allSuggestions.push(...generatePracticeSuggestions(question, questionResults));
+      }
+    }
+
+    const knowledgePointOverviews = generateKnowledgePointOverviews(questions, adjustedResults);
+    const studentOverviews = generateStudentOverviews(questions, adjustedResults);
+    const reviewWorkbench = buildReviewWorkbench(adjustedResults, reviewStatuses);
+    const crossQuestionStats = buildCrossQuestionStats(questions, adjustedResults);
+
+    return {
+      results: adjustedResults,
+      classOverview: classOverviews,
+      knowledgePointOverview: knowledgePointOverviews,
+      practiceSuggestions: allSuggestions,
+      studentOverview: studentOverviews,
+      reviewWorkbench,
+      crossQuestionStats,
+    };
+  }
+
+  buildLectureExport(
+    questions: Question[],
+    results: CorrectionResult[],
+    reviewStatuses?: Record<string, ReviewStatus>,
+  ): LectureExport {
+    return buildLectureExport(questions, results, reviewStatuses);
+  }
+
+  buildBatchDiagnosis(
+    questions: Question[],
+    results: CorrectionResult[],
+  ): BatchDiagnosis {
+    return buildBatchDiagnosis(questions, results);
   }
 
   getConfig(): SDKConfig {

@@ -50,6 +50,11 @@ export type {
   ReviewWorkbench,
   TypicalWrongAnswer,
   CrossQuestionStat,
+  ReviewAdjustment,
+  LectureExport,
+  LectureExportKnowledgePoint,
+  LectureExportQuestion,
+  BatchDiagnosis,
 } from './types';
 
 export { compare, computeSimilarity, matchSynonyms, matchKeywordWithSynonyms, normalize } from './engine/comparator';
@@ -65,4 +70,7 @@ export {
   buildTypicalWrongAnswers,
   buildReviewWorkbench,
   buildCrossQuestionStats,
+  applyReviewDecisions,
+  buildLectureExport,
+  buildBatchDiagnosis,
 } from './generator/commentary';

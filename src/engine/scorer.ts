@@ -138,9 +138,8 @@ function applyRubric(
   for (const rubric of rubricItems) {
     const allowPartial = rubric.allowPartialCredit ?? defaultPartialCreditEnabled;
     const allOrNothing = rubric.allOrNothing ?? false;
-    const criterionScores: { criterionId: string; earned: boolean; scoreAwarded: number }[] = [];
+    const criteriaScores: { criterionId: string; earned: boolean; scoreAwarded: number }[] = [];
     const rubricEvidences: HitEvidence[] = [];
-    let rubricRawEarned = 0;
 
     let allCriteriaFullHit = true;
 
@@ -149,8 +148,8 @@ function applyRubric(
       const allKeywordsHit = kwResult.hitWeight === kwResult.totalWeight && kwResult.totalWeight > 0;
       const partialHit = kwResult.scoreRatio > 0;
 
-      let criterionEarned = false;
       let criterionAwarded = 0;
+      let criterionEarned = false;
 
       if (allowPartial) {
         criterionAwarded = criterion.score * kwResult.scoreRatio;
@@ -167,59 +166,54 @@ function applyRubric(
       const criterionScoreRatio =
         criterion.score > 0 ? criterionAwarded / criterion.score : 0;
 
-      for (const ev of kwResult.evidences) {
+      let evSumBefore = 0;
+      for (let i = 0; i < kwResult.evidences.length; i++) {
+        const ev = kwResult.evidences[i];
         const matchedKwText = ev.matchedViaSynonym
           ? ev.matchedViaSynonym.canonical
           : ev.matchedContent;
-        const kw = criterion.keywords.find(
-          (k) => k.keyword === matchedKwText,
-        );
+        const kw = criterion.keywords.find((k) => k.keyword === matchedKwText);
         let kwRatio = 0;
         if (kw && kwResult.totalWeight > 0) {
           kwRatio = kw.weight / kwResult.totalWeight;
         }
-        ev.scoreAwarded = Math.round(criterionAwarded * kwRatio * 100) / 100;
-        ev.criterionScore = criterionAwarded;
+
+        const isLast = i === kwResult.evidences.length - 1;
+        let rawScore = criterionAwarded * kwRatio;
+
+        if (isLast) {
+          rawScore = criterionAwarded - evSumBefore;
+        } else {
+          rawScore = Math.round(rawScore * 100) / 100;
+          evSumBefore += rawScore;
+        }
+
+        ev.scoreAwarded = Math.round(rawScore * 100) / 100;
+        ev.criterionScore = Math.round(criterionAwarded * 100) / 100;
         ev.criterionScoreRatio = Math.round(criterionScoreRatio * 10000) / 100;
-        rubricRawEarned += ev.scoreAwarded;
         rubricEvidences.push(ev);
       }
 
-      criterionScores.push({
+      criteriaScores.push({
         criterionId: criterion.id,
         earned: criterionEarned,
         scoreAwarded: Math.round(criterionAwarded * 100) / 100,
       });
     }
 
-    let finalEarned = Math.min(Math.round(rubricRawEarned * 100) / 100, rubric.maxScore);
+    const rubricEvSum = rubricEvidences.reduce((s, e) => s + (e.scoreAwarded || 0), 0);
+    let finalEarned = Math.min(Math.round(rubricEvSum * 100) / 100, rubric.maxScore);
     let passed = false;
 
     if (allOrNothing) {
       if (allCriteriaFullHit) {
         finalEarned = rubric.maxScore;
-        for (const ev of rubricEvidences) {
-          const kw = rubric.criteria
-            .flatMap((c) => c.keywords)
-            .find((k) =>
-              k.keyword ===
-              (ev.matchedViaSynonym ? ev.matchedViaSynonym.canonical : ev.matchedContent),
-            );
-          if (kw) {
-            const criterion = rubric.criteria.find((c) =>
-              c.keywords.some((kk) => kk.keyword === kw.keyword),
-            );
-            if (criterion) {
-              const kwRatio =
-                criterion.keywords.reduce((s, k) => s + k.weight, 0) > 0
-                  ? kw.weight / criterion.keywords.reduce((s, k) => s + k.weight, 0)
-                  : 0;
-              ev.scoreAwarded = Math.round(criterion.score * kwRatio * 100) / 100;
-              ev.criterionScore = criterion.score;
-              ev.criterionScoreRatio = 100;
-            }
-          }
+        const diff = finalEarned - rubricEvSum;
+        if (rubricEvidences.length > 0 && Math.abs(diff) > 0.001) {
+          const last = rubricEvidences[rubricEvidences.length - 1];
+          last.scoreAwarded = Math.round((last.scoreAwarded + diff) * 100) / 100;
         }
+        passed = true;
       } else {
         finalEarned = 0;
         for (const ev of rubricEvidences) {
@@ -231,29 +225,44 @@ function applyRubric(
           scoreAwarded: 0,
           rubricItemId: rubric.id,
         });
+        passed = false;
       }
-      passed = allCriteriaFullHit;
     } else {
       passed = finalEarned > 0 && finalEarned >= rubric.maxScore * 0.6;
+      const rawSum = rubricEvidences.reduce((s, e) => s + (e.scoreAwarded || 0), 0);
+      const diff = finalEarned - rawSum;
+      if (rubricEvidences.length > 0 && Math.abs(diff) > 0.001 && diff > 0) {
+        const last = rubricEvidences[rubricEvidences.length - 1];
+        last.scoreAwarded = Math.round((last.scoreAwarded + diff) * 100) / 100;
+      }
+    }
+
+    for (const ev of rubricEvidences) {
+      if (ev.rule !== 'rubric_all_or_nothing_miss') {
+        ev.rubricScore = finalEarned;
+        ev.rubricScoreRatio =
+          rubric.maxScore > 0 ? Math.round((finalEarned / rubric.maxScore) * 10000) / 100 : 0;
+      }
     }
 
     const weightRatio = (rubric.weight || 1) / totalWeight;
     const rubricContributionToTotal =
       rubric.maxScore > 0 ? weightRatio * maxTotalScore * (finalEarned / rubric.maxScore) : 0;
 
-    if (allOrNothing && !allCriteriaFullHit) {
-      // nothing to add for evidence scaling
-    } else {
-      const scaleFactor =
-        rubricRawEarned > 0 ? finalEarned / rubricRawEarned : 1;
-      for (const ev of rubricEvidences) {
-        if (ev.rule !== 'rubric_all_or_nothing_miss') {
-          ev.scoreAwarded = Math.round(ev.scoreAwarded * scaleFactor * 100) / 100;
-          ev.rubricScore = finalEarned;
-          ev.rubricScoreRatio =
-            rubric.maxScore > 0 ? Math.round((finalEarned / rubric.maxScore) * 10000) / 100 : 0;
-        }
+    let wtSum = 0;
+    const nonMissEvs = rubricEvidences.filter((e) => e.rule !== 'rubric_all_or_nothing_miss');
+    for (let i = 0; i < nonMissEvs.length; i++) {
+      const ev = nonMissEvs[i];
+      const evRatio = finalEarned > 0 ? (ev.scoreAwarded || 0) / finalEarned : 0;
+      const isLast = i === nonMissEvs.length - 1;
+      let wt = rubricContributionToTotal * evRatio;
+      if (isLast) {
+        wt = rubricContributionToTotal - wtSum;
+      } else {
+        wt = Math.round(wt * 100) / 100;
+        wtSum += wt;
       }
+      ev.weightedTotalContribution = Math.round(wt * 100) / 100;
     }
 
     const detail: RubricScoreDetail = {
@@ -264,16 +273,13 @@ function applyRubric(
       allowPartialCredit: allowPartial,
       allOrNothing,
       passed,
-      criteriaScores: criterionScores,
+      criteriaScores,
       hitEvidences: rubricEvidences,
     };
     rubricScores.push(detail);
     totalEarned += rubricContributionToTotal;
 
     for (const ev of rubricEvidences) {
-      ev.weightedTotalContribution = Math.round(
-        (rubric.maxScore > 0 ? (ev.scoreAwarded / rubric.maxScore) : 0) * weightRatio * maxTotalScore * 100,
-      ) / 100;
       allEvidences.push(ev);
     }
   }

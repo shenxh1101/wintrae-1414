@@ -210,6 +210,8 @@ export interface ScoreResult {
   suspiciousItems: SuspiciousItem[];
   manualReviewNeeded: boolean;
   manualReviewReasons: ManualReviewReason[];
+  reviewAdjustedScore?: number;
+  reviewAdjustments?: ReviewAdjustment[];
 }
 
 export interface ErrorClassificationResult {
@@ -279,9 +281,77 @@ export interface CrossQuestionStat {
   expression: string;
   type: 'synonym' | 'disabled';
   totalHitCount: number;
-  byQuestion: { questionId: string; hitCount: number; knowledgePoints: string[] }[];
-  byKnowledgePoint: { knowledgePoint: string; hitCount: number; questionIds: string[] }[];
+  uniqueStudentCount: number;
+  byQuestion: { questionId: string; hitCount: number; uniqueStudentCount: number; knowledgePoints: string[] }[];
+  byKnowledgePoint: { knowledgePoint: string; hitCount: number; uniqueStudentCount: number; questionIds: string[] }[];
   metadata?: { canonical?: string; reason?: string };
+}
+
+export interface ReviewAdjustment {
+  reviewItemId: string;
+  deltaScore: number;
+  newEarnedScore: number;
+  note?: string;
+}
+
+export interface LectureExportKnowledgePoint {
+  knowledgePoint: string;
+  avgScoreRatio: number;
+  questionCount: number;
+  studentCount: number;
+  questions: LectureExportQuestion[];
+  topErrors: ErrorCategoryItem[];
+  typicalWrongAnswers: TypicalWrongAnswer[];
+  suggestedPriority: number;
+}
+
+export interface LectureExportQuestion {
+  questionId: string;
+  stem: string;
+  questionType: QuestionType;
+  referenceAnswer?: string;
+  score: number;
+  avgScoreRatio: number;
+  typicalWrongAnswers: TypicalWrongAnswer[];
+  weakRubricItems: { rubricItemName: string; avgRatio: number }[];
+  studentIds: string[];
+}
+
+export interface LectureExport {
+  generatedAt: number;
+  classSummary: {
+    totalStudents: number;
+    totalQuestions: number;
+    totalScore: number;
+    avgScoreRatio: number;
+    reviewedRatio: number;
+  };
+  knowledgePoints: LectureExportKnowledgePoint[];
+  priorityList: {
+    knowledgePoints: { knowledgePoint: string; priority: number; reason: string }[];
+    highFreqExpressions: CrossQuestionStat[];
+    highFreqErrorCombos: { categories: ErrorCategory[]; count: number; frequency: number }[];
+  };
+  reviewWorkbench: ReviewWorkbench;
+}
+
+export interface BatchDiagnosis {
+  priorityKnowledgePoints: {
+    knowledgePoint: string;
+    avgScoreRatio: number;
+    studentCount: number;
+    priorityScore: number;
+    reason: string;
+  }[];
+  highFreqReviewExpressions: CrossQuestionStat[];
+  highFreqErrorCombinations: {
+    categories: ErrorCategory[];
+    studentIds: string[];
+    questionIds: string[];
+    count: number;
+    frequency: number;
+  }[];
+  suggestedLectureOrder: string[];
 }
 
 export interface ClassOverviewItem {
