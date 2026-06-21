@@ -39,9 +39,14 @@ export type {
   BatchCorrectionResult,
   SDKConfig,
   DefaultScoringConfig,
+  DisabledAnswer,
+  RubricItem,
+  RubricCriterion,
+  RubricScoreDetail,
+  KnowledgePointOverview,
 } from './types';
 
-export { compare, computeSimilarity, matchSynonyms } from './engine/comparator';
+export { compare, computeSimilarity, matchSynonyms, matchKeywordWithSynonyms, normalize } from './engine/comparator';
 export { score } from './engine/scorer';
 export { classifyError } from './classifier/error-classifier';
 export {
@@ -49,4 +54,5 @@ export {
   generateClassOverview,
   generatePracticeSuggestions,
   generateCommentary,
+  generateKnowledgePointOverviews,
 } from './generator/commentary';

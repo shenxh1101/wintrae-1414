@@ -25,6 +25,7 @@ export interface ChoiceQuestion {
   stem: string;
   options: ChoiceOption[];
   score: number;
+  rubric?: RubricItem[];
   knowledgePoints: string[];
 }
 
@@ -33,6 +34,7 @@ export interface FillBlankQuestion {
   id: string;
   stem: string;
   blanks: FillBlankItem[];
+  rubric?: RubricItem[];
   score: number;
   knowledgePoints: string[];
 }
@@ -41,7 +43,7 @@ export interface FillBlankItem {
   index: number;
   acceptableAnswers: string[];
   synonyms: string[][];
-  disabledAnswers: string[];
+  disabledAnswers: DisabledAnswer[];
   partialScores: PartialScoreEntry[];
 }
 
@@ -57,8 +59,9 @@ export interface ShortAnswerQuestion {
   referenceAnswer: string;
   keywords: KeywordEntry[];
   synonyms: string[][];
-  disabledAnswers: string[];
+  disabledAnswers: DisabledAnswer[];
   partialScores: PartialScoreEntry[];
+  rubric?: RubricItem[];
   score: number;
   knowledgePoints: string[];
 }
@@ -66,6 +69,7 @@ export interface ShortAnswerQuestion {
 export interface KeywordEntry {
   keyword: string;
   weight: number;
+  synonyms?: string[];
 }
 
 export interface StepQuestion {
@@ -73,6 +77,7 @@ export interface StepQuestion {
   id: string;
   stem: string;
   steps: StepItem[];
+  rubric?: RubricItem[];
   score: number;
   knowledgePoints: string[];
 }
@@ -83,7 +88,7 @@ export interface StepItem {
   referenceAnswer: string;
   keywords: KeywordEntry[];
   synonyms: string[][];
-  disabledAnswers: string[];
+  disabledAnswers: DisabledAnswer[];
   partialScores: PartialScoreEntry[];
   score: number;
 }
@@ -120,6 +125,7 @@ export interface ComparisonDetail {
   matched: boolean;
   matchBasis: string;
   similarity: number;
+  matchedSynonym?: { canonical: string; synonym: string };
 }
 
 export interface ComparisonResult {
@@ -128,12 +134,15 @@ export interface ComparisonResult {
   overallMatched: boolean;
   overallSimilarity: number;
   details: ComparisonDetail[];
+  matchedSynonyms: { canonical: string; synonym: string }[];
 }
 
 export interface HitEvidence {
   rule: string;
   matchedContent: string;
+  matchedViaSynonym?: { canonical: string; synonym: string };
   scoreAwarded: number;
+  rubricItemId?: string;
 }
 
 export interface SuspiciousItem {
@@ -145,6 +154,39 @@ export interface SuspiciousItem {
 export interface ManualReviewReason {
   code: string;
   message: string;
+  severity: 'warning' | 'error';
+}
+
+export interface DisabledAnswer {
+  text: string;
+  reason: string;
+}
+
+export interface RubricItem {
+  id: string;
+  name: string;
+  description: string;
+  weight: number;
+  maxScore: number;
+  allowPartialCredit: boolean;
+  criteria: RubricCriterion[];
+}
+
+export interface RubricCriterion {
+  id: string;
+  description: string;
+  keywords: KeywordEntry[];
+  score: number;
+}
+
+export interface RubricScoreDetail {
+  rubricItemId: string;
+  rubricItemName: string;
+  maxScore: number;
+  earnedScore: number;
+  allowPartialCredit: boolean;
+  criteriaScores: { criterionId: string; earned: boolean; scoreAwarded: number }[];
+  hitEvidences: HitEvidence[];
 }
 
 export interface ScoreResult {
@@ -152,6 +194,7 @@ export interface ScoreResult {
   totalScore: number;
   earnedScore: number;
   hitEvidences: HitEvidence[];
+  rubricScores: RubricScoreDetail[];
   suspiciousItems: SuspiciousItem[];
   manualReviewNeeded: boolean;
   manualReviewReasons: ManualReviewReason[];
@@ -176,6 +219,7 @@ export interface StudentCommentary {
   strengths: string[];
   improvements: string[];
   errorExplanation: string;
+  rubricFeedback: { rubricItemName: string; feedback: string }[];
 }
 
 export interface ClassOverviewItem {
@@ -184,6 +228,19 @@ export interface ClassOverviewItem {
   scoreDistribution: ScoreBand[];
   topErrors: ErrorCategoryItem[];
   commonMistakes: string[];
+  rubricBreakdown: { rubricItemId: string; rubricItemName: string; avgScore: number; avgRatio: number }[];
+}
+
+export interface KnowledgePointOverview {
+  knowledgePoint: string;
+  questionCount: number;
+  studentCount: number;
+  avgScore: number;
+  avgScoreRatio: number;
+  topErrors: ErrorCategoryItem[];
+  weakRubricItems: string[];
+  practiceDirection: PracticeSuggestion;
+  relatedQuestions: string[];
 }
 
 export interface ScoreBand {
@@ -216,6 +273,7 @@ export interface CorrectionResult {
 export interface BatchCorrectionResult {
   results: CorrectionResult[];
   classOverview: ClassOverviewItem[];
+  knowledgePointOverview: KnowledgePointOverview[];
   practiceSuggestions: PracticeSuggestion[];
 }
 

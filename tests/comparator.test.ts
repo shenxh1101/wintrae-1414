@@ -31,15 +31,21 @@ describe('computeSimilarity', () => {
 
 describe('matchSynonyms', () => {
   it('matches exact synonym', () => {
-    expect(matchSynonyms('细胞膜', [['细胞膜', '质膜', '生物膜']])).toBe(true);
+    const r = matchSynonyms('细胞膜', [['细胞膜', '质膜', '生物膜']]);
+    expect(r.matched).toBe(true);
+    expect(r.canonical).toBe('细胞膜');
+    expect(r.synonym).toBe('细胞膜');
   });
 
   it('matches alternative synonym', () => {
-    expect(matchSynonyms('质膜', [['细胞膜', '质膜', '生物膜']])).toBe(true);
+    const r = matchSynonyms('质膜', [['细胞膜', '质膜', '生物膜']]);
+    expect(r.matched).toBe(true);
+    expect(r.canonical).toBe('细胞膜');
+    expect(r.synonym).toBe('质膜');
   });
 
   it('returns false when no match', () => {
-    expect(matchSynonyms('细胞核', [['细胞膜', '质膜']])).toBe(false);
+    expect(matchSynonyms('细胞核', [['细胞膜', '质膜']]).matched).toBe(false);
   });
 });
 

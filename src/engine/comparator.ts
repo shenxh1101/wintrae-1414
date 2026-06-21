@@ -12,6 +12,7 @@ import {
   FillBlankAnswer,
   ShortAnswerAnswer,
   StepAnswer,
+  KeywordEntry,
 } from '../types';
 
 export function normalize(text: string): string {
@@ -57,14 +58,44 @@ export function computeSimilarity(a: string, b: string): number {
   return Math.max(0, 1 - dist / maxLen);
 }
 
-export function matchSynonyms(text: string, synonymGroups: string[][]): boolean {
+export function matchSynonyms(text: string, synonymGroups: string[][]): { matched: boolean; canonical?: string; synonym?: string } {
   const normalized = normalize(text);
   for (const group of synonymGroups) {
     for (const synonym of group) {
-      if (normalize(synonym) === normalized) return true;
+      if (normalize(synonym) === normalized) {
+        return { matched: true, canonical: group[0], synonym };
+      }
     }
   }
-  return false;
+  return { matched: false };
+}
+
+export function matchKeywordWithSynonyms(
+  text: string,
+  keyword: KeywordEntry,
+): { matched: boolean; canonical?: string; synonym?: string } {
+  const normalizedText = normalize(text);
+  const canonical = normalize(keyword.keyword);
+  if (normalizedText.includes(canonical)) {
+    return { matched: true, canonical: keyword.keyword, synonym: undefined };
+  }
+  if (keyword.synonyms) {
+    for (const syn of keyword.synonyms) {
+      if (normalizedText.includes(normalize(syn))) {
+        return { matched: true, canonical: keyword.keyword, synonym: syn };
+      }
+    }
+  }
+  return { matched: false };
+}
+
+function computeSetSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let intersection = 0;
+  for (const item of a) {
+    if (b.has(item)) intersection++;
+  }
+  return intersection / Math.max(a.size, b.size);
 }
 
 function compareChoice(
@@ -74,8 +105,8 @@ function compareChoice(
   const correctLabels = question.options
     .filter((o) => o.isCorrect)
     .map((o) => o.label);
-  const selected = answer.selectedLabels.sort();
-  const correct = correctLabels.sort();
+  const selected = [...answer.selectedLabels].sort();
+  const correct = [...correctLabels].sort();
   const matched = JSON.stringify(selected) === JSON.stringify(correct);
 
   const details: ComparisonDetail[] = [
@@ -94,16 +125,8 @@ function compareChoice(
     overallMatched: matched,
     overallSimilarity: details[0].similarity,
     details,
+    matchedSynonyms: [],
   };
-}
-
-function computeSetSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 1;
-  let intersection = 0;
-  for (const item of a) {
-    if (b.has(item)) intersection++;
-  }
-  return intersection / Math.max(a.size, b.size);
 }
 
 function compareFillBlank(
@@ -112,12 +135,14 @@ function compareFillBlank(
 ): ComparisonResult {
   const details: ComparisonDetail[] = [];
   let totalSim = 0;
+  const allSynonyms: { canonical: string; synonym: string }[] = [];
 
   for (const blank of question.blanks) {
     const studentValue = answer.values[blank.index] ?? '';
     const normalizedStudent = normalize(studentValue);
     let bestSim = 0;
     let bestBasis = '';
+    let matchedSyn: { canonical: string; synonym: string } | undefined;
 
     for (const ref of blank.acceptableAnswers) {
       const sim = computeSimilarity(studentValue, ref);
@@ -128,22 +153,21 @@ function compareFillBlank(
     }
 
     if (bestSim < 1 && blank.synonyms.length > 0) {
-      for (const group of blank.synonyms) {
-        for (const syn of group) {
-          if (normalize(syn) === normalizedStudent) {
-            bestSim = 1;
-            bestBasis = `空${blank.index + 1}: 同义匹配 "${syn}"`;
-            break;
-          }
-        }
-        if (bestSim >= 1) break;
+      const synMatch = matchSynonyms(studentValue, blank.synonyms);
+      if (synMatch.matched) {
+        bestSim = 1;
+        bestBasis = `空${blank.index + 1}: 同义匹配 "${synMatch.synonym}"（规范为 "${synMatch.canonical}"）`;
+        matchedSyn = { canonical: synMatch.canonical!, synonym: synMatch.synonym! };
       }
     }
+
+    if (matchedSyn) allSynonyms.push(matchedSyn);
 
     details.push({
       matched: bestSim >= 1,
       matchBasis: bestBasis || `空${blank.index + 1}: 未匹配 (学生作答 "${studentValue}")`,
       similarity: bestSim,
+      matchedSynonym: matchedSyn,
     });
     totalSim += bestSim;
   }
@@ -155,6 +179,7 @@ function compareFillBlank(
     overallMatched: details.every((d) => d.matched),
     overallSimilarity: avgSim,
     details,
+    matchedSynonyms: allSynonyms,
   };
 }
 
@@ -164,7 +189,6 @@ function compareShortAnswer(
 ): ComparisonResult {
   const studentText = answer.text;
   const normalizedStudent = normalize(studentText);
-  const normalizedRef = normalize(question.referenceAnswer);
 
   let sim = computeSimilarity(studentText, question.referenceAnswer);
 
@@ -178,9 +202,17 @@ function compareShortAnswer(
   }
 
   let keywordHitCount = 0;
+  const allSynonyms: { canonical: string; synonym: string }[] = [];
+  let matchedSynDetail: { canonical: string; synonym: string } | undefined;
+
   for (const kw of question.keywords) {
-    if (normalizedStudent.includes(normalize(kw.keyword))) {
+    const kwMatch = matchKeywordWithSynonyms(studentText, kw);
+    if (kwMatch.matched) {
       keywordHitCount++;
+      if (kwMatch.synonym) {
+        matchedSynDetail = { canonical: kwMatch.canonical!, synonym: kwMatch.synonym };
+        allSynonyms.push(matchedSynDetail);
+      }
     }
   }
 
@@ -189,7 +221,8 @@ function compareShortAnswer(
       for (const syn of group) {
         if (normalizedStudent.includes(normalize(syn))) {
           sim = Math.max(sim, 0.9);
-          matchBasis = `包含同义表达 "${syn}"`;
+          matchBasis = `包含同义表达 "${syn}"（规范为 "${group[0]}"）`;
+          allSynonyms.push({ canonical: group[0], synonym: syn });
           break;
         }
       }
@@ -205,6 +238,7 @@ function compareShortAnswer(
       matched,
       matchBasis,
       similarity: overallSim,
+      matchedSynonym: matchedSynDetail,
     },
   ];
 
@@ -214,6 +248,7 @@ function compareShortAnswer(
     overallMatched: matched,
     overallSimilarity: overallSim,
     details,
+    matchedSynonyms: allSynonyms,
   };
 }
 
@@ -223,11 +258,11 @@ function compareStepByStep(
 ): ComparisonResult {
   const details: ComparisonDetail[] = [];
   let totalSim = 0;
+  const allSynonyms: { canonical: string; synonym: string }[] = [];
 
   for (const step of question.steps) {
     const studentStep = answer.steps[step.index] ?? '';
     const normalizedStudent = normalize(studentStep);
-    const normalizedRef = normalize(step.referenceAnswer);
 
     let sim = computeSimilarity(studentStep, step.referenceAnswer);
 
@@ -243,9 +278,16 @@ function compareStepByStep(
     }
 
     let keywordHitCount = 0;
+    let stepMatchedSyn: { canonical: string; synonym: string } | undefined;
+
     for (const kw of step.keywords) {
-      if (normalizedStudent.includes(normalize(kw.keyword))) {
+      const kwMatch = matchKeywordWithSynonyms(studentStep, kw);
+      if (kwMatch.matched) {
         keywordHitCount++;
+        if (kwMatch.synonym) {
+          stepMatchedSyn = { canonical: kwMatch.canonical!, synonym: kwMatch.synonym };
+          allSynonyms.push(stepMatchedSyn);
+        }
       }
     }
 
@@ -254,7 +296,8 @@ function compareStepByStep(
         for (const syn of group) {
           if (normalizedStudent.includes(normalize(syn))) {
             sim = Math.max(sim, 0.9);
-            matchBasis = `步骤${step.index}: 包含同义表达`;
+            matchBasis = `步骤${step.index}: 包含同义表达 "${syn}"`;
+            allSynonyms.push({ canonical: group[0], synonym: syn });
             break;
           }
         }
@@ -268,7 +311,7 @@ function compareStepByStep(
       matchBasis = `步骤${step.index}: 关键词全部命中`;
     }
 
-    details.push({ matched, matchBasis, similarity: sim });
+    details.push({ matched, matchBasis, similarity: sim, matchedSynonym: stepMatchedSyn });
     totalSim += sim;
   }
 
@@ -279,6 +322,7 @@ function compareStepByStep(
     overallMatched: details.every((d) => d.matched),
     overallSimilarity: avgSim,
     details,
+    matchedSynonyms: allSynonyms,
   };
 }
 
